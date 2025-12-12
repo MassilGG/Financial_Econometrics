@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import chi2, norm
-from statsmodels.stats.diagnostic import acorr_ljungbox
 from typing import Dict
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 # %% ------------------------------ T-GARCH(1,1) & GARCH(1,1) ------------------------------
 
