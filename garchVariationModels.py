@@ -351,3 +351,162 @@ def lr_test_egarch_sym_vs_asym(fit_sym: dict, fit_asym: dict) -> dict:
     lr_stat = 2.0 * (ll1 - ll0)
     pval = 1.0 - chi2.cdf(lr_stat, df=1)
     return {"LR": float(lr_stat), "pvalue": float(pval), "df": 1}
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def build_vol_series(metrics_by_asset, asset: str, period: str,
+                     sigma2: np.ndarray,
+                     smooth_window: int = 21,
+                     annualize: int = 252) -> pd.DataFrame:
+    """
+    Returns a DataFrame aligned to dates with:
+      - eps, rv = eps^2
+      - rv_smooth = rolling mean of rv (optional proxy for realized variance)
+      - vol_model = sqrt(sigma2) annualized
+      - vol_rv = sqrt(rv) annualized
+      - vol_rv_smooth = sqrt(rv_smooth) annualized
+    """
+    dfp = metrics_by_asset[asset][period].copy()
+    dates = pd.to_datetime(dfp["Date"])
+    eps = dfp["LogReturn"].to_numpy(dtype=float)
+    eps = eps - np.nanmean(eps)
+
+    sigma2 = np.asarray(sigma2, float)
+
+    # Align lengths robustly (sometimes you drop NaNs differently)
+    m = min(len(eps), len(sigma2), len(dates))
+    eps = eps[:m]
+    sigma2 = sigma2[:m]
+    dates = dates.iloc[:m]
+
+    rv = eps**2
+    rv_smooth = pd.Series(rv).rolling(smooth_window, min_periods=max(5, smooth_window//3)).mean().to_numpy()
+
+    vol_model = np.sqrt(np.maximum(sigma2, 1e-18)) * np.sqrt(annualize)
+    vol_rv = np.sqrt(np.maximum(rv, 1e-18)) * np.sqrt(annualize)
+    vol_rv_smooth = np.sqrt(np.maximum(rv_smooth, 1e-18)) * np.sqrt(annualize)
+
+    out = pd.DataFrame({
+        "Date": dates.values,
+        "eps": eps,
+        "rv": rv,
+        "rv_smooth": rv_smooth,
+        "sigma2_model": sigma2,
+        "vol_model": vol_model,
+        "vol_rv": vol_rv,
+        "vol_rv_smooth": vol_rv_smooth,
+    })
+    return out
+
+
+def vol_forecast_metrics_from_sigma2(eps: np.ndarray, sigma2_model: np.ndarray, eps_floor: float = 1e-12) -> dict:
+    """
+    Evaluate 1-step-ahead volatility forecasts using:
+      forecast f_t = sigma2_model[t] vs realized rv_t = eps_t^2 (same index).
+    (You can shift by 1 if you prefer strict t|t-1 forecasting; see note below.)
+    """
+    eps = np.asarray(eps, float)
+    sigma2_model = np.asarray(sigma2_model, float)
+
+    m = np.isfinite(eps) & np.isfinite(sigma2_model)
+    eps = eps[m]
+    f = sigma2_model[m]
+    rv = eps**2
+
+    if len(rv) < 20:
+        return {"n": len(rv), "MSE": np.nan, "QLIKE": np.nan, "corr": np.nan}
+
+    f_safe = np.maximum(f, eps_floor)
+    mse = float(np.mean((rv - f_safe) ** 2))
+    qlike = float(np.mean(rv / f_safe + np.log(f_safe)))
+    corr = float(np.corrcoef(rv, f_safe)[0, 1]) if len(rv) > 2 else np.nan
+    return {"n": int(len(rv)), "MSE": mse, "QLIKE": qlike, "corr": corr}
+
+def fit_and_evaluate_vol_models(metrics_by_asset,
+                                asset: str,
+                                period: str,
+                                smooth_window: int = 21,
+                                annualize: int = 252,
+                                plot: bool = True) -> pd.DataFrame:
+    """
+    Fits each model ONCE, reuses parameters, builds volatility series + metrics, and optionally plots.
+    Returns a summary DataFrame of metrics (per model).
+    """
+    eps = get_logreturns(metrics_by_asset, asset, period)
+
+    results = []
+
+    # --- GARCH(1,1)
+    fit_g = fit_garch11(eps)
+    if fit_g.get("success"):
+        p = fit_g["params"]
+        sigma2_g = _compute_sigma2_garch11(eps, p["omega"], p["alpha"], p["beta"])
+        ser_g = build_vol_series(metrics_by_asset, asset, period, sigma2_g, smooth_window, annualize)
+        met_g = vol_forecast_metrics_from_sigma2(ser_g["eps"].to_numpy(), ser_g["sigma2_model"].to_numpy())
+        results.append({"Model": "GARCH(1,1)", **met_g})
+    else:
+        ser_g = None
+        results.append({"Model": "GARCH(1,1)", "n": 0, "MSE": np.nan, "QLIKE": np.nan, "corr": np.nan})
+
+    # --- T-GARCH(1,1)
+    fit_t = fit_tgarch11(eps)
+    if fit_t.get("success"):
+        p = fit_t["params"]
+        sigma2_t = _compute_sigma2_tgarch11(eps, p["omega"], p["alpha_-"], p["alpha_+"], p["beta"])
+        ser_t = build_vol_series(metrics_by_asset, asset, period, sigma2_t, smooth_window, annualize)
+        met_t = vol_forecast_metrics_from_sigma2(ser_t["eps"].to_numpy(), ser_t["sigma2_model"].to_numpy())
+        results.append({"Model": "T-GARCH(1,1)", **met_t})
+    else:
+        ser_t = None
+        results.append({"Model": "T-GARCH(1,1)", "n": 0, "MSE": np.nan, "QLIKE": np.nan, "corr": np.nan})
+
+    # --- EGARCH symmetric
+    fit_es = fit_egarch11_symmetric(eps)
+    if fit_es.get("success"):
+        p = fit_es["params"]
+        sigma2_es = _compute_sigma2_egarch11(eps, p["c"], p["alpha"], p["gamma"], 0.0)
+        ser_es = build_vol_series(metrics_by_asset, asset, period, sigma2_es, smooth_window, annualize)
+        met_es = vol_forecast_metrics_from_sigma2(ser_es["eps"].to_numpy(), ser_es["sigma2_model"].to_numpy())
+        results.append({"Model": "EGARCH(1,1) sym", **met_es})
+    else:
+        ser_es = None
+        results.append({"Model": "EGARCH(1,1) sym", "n": 0, "MSE": np.nan, "QLIKE": np.nan, "corr": np.nan})
+
+    # --- EGARCH asymmetric
+    fit_ea = fit_egarch11_asym(eps)
+    if fit_ea.get("success"):
+        p = fit_ea["params"]
+        sigma2_ea = _compute_sigma2_egarch11(eps, p["c"], p["alpha"], p["gamma"], p["lambda"])
+        ser_ea = build_vol_series(metrics_by_asset, asset, period, sigma2_ea, smooth_window, annualize)
+        met_ea = vol_forecast_metrics_from_sigma2(ser_ea["eps"].to_numpy(), ser_ea["sigma2_model"].to_numpy())
+        results.append({"Model": "EGARCH(1,1) asym", **met_ea})
+    else:
+        ser_ea = None
+        results.append({"Model": "EGARCH(1,1) asym", "n": 0, "MSE": np.nan, "QLIKE": np.nan, "corr": np.nan})
+
+    summary = pd.DataFrame(results)
+
+    if plot:
+        # Use whichever series exists to get the date axis
+        base = next((s for s in (ser_g, ser_t, ser_es, ser_ea) if s is not None), None)
+        if base is not None:
+            plt.figure(figsize=(16, 5))
+            plt.plot(base["Date"], base["vol_rv_smooth"], label=f"Sampled vol proxy (sqrt rolling mean eps^2, w={smooth_window})")
+            # Optional: also show spiky raw proxy
+            # plt.plot(base["Date"], base["vol_rv"], alpha=0.25, label="Raw proxy (sqrt eps^2)")
+
+            if ser_g is not None:  plt.plot(ser_g["Date"], ser_g["vol_model"], label="GARCH(1,1) vol")
+            if ser_t is not None:  plt.plot(ser_t["Date"], ser_t["vol_model"], label="T-GARCH(1,1) vol")
+            if ser_es is not None: plt.plot(ser_es["Date"], ser_es["vol_model"], label="EGARCH sym vol")
+            if ser_ea is not None: plt.plot(ser_ea["Date"], ser_ea["vol_model"], label="EGARCH asym vol")
+
+            plt.title(f"{asset} — {period}: Model-implied volatility vs sampled volatility proxy (annualized)")
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
+
+    return summary
