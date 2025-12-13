@@ -4,6 +4,7 @@ from scipy.optimize import minimize
 from scipy.stats import chi2, norm
 from typing import Dict
 from statsmodels.stats.diagnostic import acorr_ljungbox
+import matplotlib.pyplot as plt
 
 # %% ------------------------------ T-GARCH(1,1) & GARCH(1,1) ------------------------------
 
@@ -352,10 +353,6 @@ def lr_test_egarch_sym_vs_asym(fit_sym: dict, fit_asym: dict) -> dict:
     pval = 1.0 - chi2.cdf(lr_stat, df=1)
     return {"LR": float(lr_stat), "pvalue": float(pval), "df": 1}
 
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 
 def build_vol_series(metrics_by_asset, asset: str, period: str,
                      sigma2: np.ndarray,
