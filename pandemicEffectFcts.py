@@ -31,6 +31,20 @@ PERIODS: List[Period] = [
 DATE_FMT = mdates.DateFormatter("%Y-%m")
 DATE_LOC = mdates.AutoDateLocator(minticks=6, maxticks=12)
 
+@dataclass(frozen=True)
+class Period:
+    """
+    Simple container for named time windows.
+
+    Fields:
+      - name: label shown in tables/plots (e.g., "2015–2019")
+      - start: start date string (YYYY-MM-DD)
+      - end: end date string (YYYY-MM-DD)
+    """
+    name: str
+    start: str
+    end: str
+
 
 
 # Ljung–Box test implementation
@@ -287,23 +301,6 @@ def adfuller(x: np.ndarray,
     stat, used = _adf_regression(x, p_opt, regression=regression)
     pval = float(norm.cdf(stat)) if np.isfinite(stat) else np.nan  # left-tail approx
     return (stat, pval, p_opt, used, None, None)
-
-
-# Constants and configurations
-
-@dataclass(frozen=True)
-class Period:
-    """
-    Simple container for named time windows.
-
-    Fields:
-      - name: label shown in tables/plots (e.g., "2015–2019")
-      - start: start date string (YYYY-MM-DD)
-      - end: end date string (YYYY-MM-DD)
-    """
-    name: str
-    start: str
-    end: str
 
 
 # I/O
