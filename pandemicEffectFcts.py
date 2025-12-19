@@ -1,8 +1,7 @@
 import pandas as pd
 import yfinance as yf
-from typing import Dict
+from typing import Dict, List, Iterable, Sequence, Tuple
 from dataclasses import dataclass
-from typing import List, Iterable, Sequence, Tuple
 import numpy as np
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
